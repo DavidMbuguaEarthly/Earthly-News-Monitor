@@ -3,3 +3,5 @@ openai
 requests
 pandas
 newspaper3k
+python-dotenv
+rapidfuzz
