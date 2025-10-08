@@ -29,7 +29,7 @@ client = _client()
 st.sidebar.header("⚙️ Settings")
 
 # Dates
-default_start = datetime.utcnow() - timedelta(days=365)
+default_start = datetime.utcnow() - timedelta(days=14)  # 2 weeks default
 start_date = st.sidebar.date_input("Start date", default_start).strftime("%Y-%m-%d")
 end_date = st.sidebar.date_input("End date", datetime.utcnow()).strftime("%Y-%m-%d")
 
@@ -49,13 +49,17 @@ summary_sentences = st.sidebar.slider("Summary length (sentences)", 1, 5, 2)
 # API quota management
 st.sidebar.subheader("API Quota Management")
 max_articles_per_call = st.sidebar.slider("Articles per API call", 10, 100, 30)
-max_pages_per_item = st.sidebar.slider("Pages per keyword item", 1, 5, 2)
-max_keywords_per_run = st.sidebar.number_input("Max keywords per run", 1, 200, 50, 
-    help="Limit keywords to preserve quota")
-request_delay = st.sidebar.slider("Delay between calls (s)", 0.0, 2.0, 0.5, 0.1)
+max_pages_per_item = st.sidebar.slider("Pages per keyword item", 1, 5, 1)
+max_keywords_per_run = st.sidebar.number_input("Max keywords per run", 1, 200, 100, 
+    help="Set high to process all keywords. Lower only if you want to limit API usage.")
+request_delay = st.sidebar.slider("Delay between calls (s)", 0.0, 2.0, 0.3, 0.1)
 
-# Relevance
-fuzzy_threshold = st.sidebar.slider("Relevance sensitivity (%)", 50, 90, 60)
+# Show warning if user might hit limits
+total_keywords = sum(len(items) for items in filters.values())
+if total_keywords > max_keywords_per_run:
+    st.sidebar.warning(f"⚠️ You have {total_keywords} keywords but limit is {max_keywords_per_run}. Some keywords will be skipped.")
+else:
+    st.sidebar.success(f"✅ Will process all {total_keywords} keywords")
 
 # Debug
 debug_mode = st.sidebar.checkbox("🔍 Debug mode", value=False)
@@ -378,47 +382,56 @@ def batch_summarize(articles, sentences=2):
     return out
 
 # -------------------- Filtering & Rendering --------------------
-def filter_relevant(articles, keyword_items, threshold):
-    """Post-filter articles with fuzzy matching for AND logic verification."""
+def filter_relevant(articles, keyword_items, threshold=None):
+    """Strict keyword matching - keyword must literally appear in article text."""
     if not articles:
         return []
     
     relevant = []
     for art in articles:
-        text = (art.get("title", "") + " " + art.get("body", "")).lower()
+        title = (art.get("title", "") or "").lower()
+        body = (art.get("body", "") or "").lower()
+        text = f"{title} {body}"
         
-        is_match = False
+        matched_keywords = []
         for item in keyword_items:
-            keyword, developer = item["keyword"], item["developer"]
-            keyword_match = fuzzy_match(text, keyword, threshold)
+            keyword = item["keyword"].lower()
+            developer = item["developer"].lower() if item["developer"] else None
+            
+            # STRICT: Exact substring match only
+            keyword_found = keyword in text
             
             if developer:
-                if keyword_match and fuzzy_match(text, developer, threshold):
-                    is_match = True
-                    break
-            elif keyword_match:
-                is_match = True
-                break
+                developer_found = developer in text
+                # Both must be present
+                if keyword_found and developer_found:
+                    matched_keywords.append(f"{item['keyword']} + {item['developer']}")
+            elif keyword_found:
+                matched_keywords.append(item["keyword"])
         
-        if is_match:
+        # CRITICAL: Only include article if at least one keyword matched
+        if matched_keywords:
+            art["_matched_keywords"] = matched_keywords
             relevant.append(art)
     
     return relevant
 
 def render_articles(articles, keyword_items, label):
-    """Render filtered and summarized articles."""
+    """Render filtered and summarized articles with keyword tags."""
     if not articles:
         st.info(f"No {label.lower()} articles found.")
         return
 
     articles = sorted(articles, key=lambda x: x.get("dateTimePub", ""), reverse=True)
-    relevant = filter_relevant(articles, keyword_items, fuzzy_threshold)
+    relevant = filter_relevant(articles, keyword_items, threshold=None)
 
     if debug_mode:
-        st.write(f"📊 **{label}**: {len(articles)} fetched → {len(relevant)} relevant")
+        filtered_count = len(articles) - len(relevant)
+        st.write(f"📊 **{label}**: {len(articles)} fetched → {filtered_count} filtered out → {len(relevant)} shown")
 
     if not relevant:
-        st.warning(f"No relevant {label.lower()} articles after filtering. Try lowering relevance sensitivity.")
+        st.warning(f"No {label.lower()} articles match your keywords after strict filtering.")
+        st.info("This means the keywords don't appear in the article text. This is expected - the API sometimes returns loosely related articles.")
         return
 
     with st.spinner(f"Summarizing {len(relevant)} articles..."):
@@ -429,10 +442,20 @@ def render_articles(articles, keyword_items, label):
         url = art.get("url", "#")
         pub = art.get("dateTimePub", "")
         src = (art.get("source") or {}).get("title", "Unknown")
+        matched_keywords = art.get("_matched_keywords", [])
 
         st.subheader(title)
+        
+        # Show matched keywords as tags
+        if matched_keywords:
+            keyword_tags = " • ".join([f"🔑 **{kw}**" for kw in matched_keywords])
+            st.caption(f"{keyword_tags}")
+        
         st.caption(f"{src} • {pub}")
-        st.write(summaries[i] if i < len(summaries) else (art.get("body", "")[:300] + "..."))
+        
+        summary_text = summaries[i] if i < len(summaries) else (art.get("body", "")[:300] + "...")
+        st.write(summary_text)
+        
         if url != "#":
             st.markdown(f"[Read full article]({url})")
         st.divider()
