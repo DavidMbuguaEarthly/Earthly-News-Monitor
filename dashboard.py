@@ -46,33 +46,7 @@ if not data_types:
 # Summaries
 summary_sentences = st.sidebar.slider("Summary length (sentences)", 1, 5, 2)
 
-# API quota management
-st.sidebar.subheader("API Quota Management")
-max_articles_per_call = st.sidebar.slider("Articles per API call", 10, 100, 30)
-max_pages_per_item = st.sidebar.slider("Pages per keyword item", 1, 5, 1)
-max_keywords_per_run = st.sidebar.number_input("Max keywords per run", 1, 200, 100, 
-    help="Set high to process all keywords. Lower only if you want to limit API usage.")
-request_delay = st.sidebar.slider("Delay between calls (s)", 0.0, 2.0, 0.3, 0.1)
-
-# Show warning if user might hit limits
-total_keywords = sum(len(items) for items in filters.values())
-if total_keywords > max_keywords_per_run:
-    st.sidebar.warning(f"⚠️ You have {total_keywords} keywords but limit is {max_keywords_per_run}. Some keywords will be skipped.")
-else:
-    st.sidebar.success(f"✅ Will process all {total_keywords} keywords")
-
-# Debug
-debug_mode = st.sidebar.checkbox("🔍 Debug mode", value=False)
-
-# Show API usage estimate
-if st.sidebar.button("📊 Estimate API Usage"):
-    from collections import Counter
-    total_items = sum(len(items) for items in filters.values())
-    estimated_items = min(total_items, max_keywords_per_run * 2)
-    estimated_calls = estimated_items * max_pages_per_item
-    st.sidebar.info(f"Estimated API calls: {estimated_calls}\n({estimated_items} items × {max_pages_per_item} pages)")
-
-# -------------------- Load keywords --------------------
+# -------------------- Load keywords (MOVED HERE - before it's used) --------------------
 @st.cache_data(ttl=86400)
 def load_keywords():
     """Loads keywords and developers from CSV into structured list of dicts."""
@@ -107,6 +81,30 @@ def load_keywords():
         return {}
 
 filters = load_keywords()
+
+# API quota management
+st.sidebar.subheader("API Quota Management")
+max_articles_per_call = st.sidebar.slider("Articles per API call", 10, 100, 30)
+max_pages_per_item = st.sidebar.slider("Pages per keyword item", 1, 5, 1)
+max_keywords_per_run = st.sidebar.number_input("Max keywords per run", 1, 200, 100, 
+    help="Set high to process all keywords. Lower only if you want to limit API usage.")
+request_delay = st.sidebar.slider("Delay between calls (s)", 0.0, 2.0, 0.3, 0.1)
+
+# Show warning if user might hit limits
+total_keywords = sum(len(items) for items in filters.values())
+if total_keywords > max_keywords_per_run:
+    st.sidebar.warning(f"⚠️ You have {total_keywords} keywords but limit is {max_keywords_per_run}. Some keywords will be skipped.")
+else:
+    st.sidebar.success(f"✅ Will process all {total_keywords} keywords")
+
+# Debug
+debug_mode = st.sidebar.checkbox("🔍 Debug mode", value=False)
+
+# Show API usage estimate
+if st.sidebar.button("📊 Estimate API Usage"):
+    estimated_items = min(total_keywords, max_keywords_per_run * 2)
+    estimated_calls = estimated_items * max_pages_per_item
+    st.sidebar.info(f"Estimated API calls: {estimated_calls}\n({estimated_items} items × {max_pages_per_item} pages)")
 
 if debug_mode:
     st.sidebar.subheader("📋 Loaded Keywords")
@@ -197,10 +195,21 @@ def fetch_articles_for_items(keyword_items, start_date, end_date, label):
     if not keyword_items:
         return []
 
-    # Limit items to preserve quota
+    # Limit items to preserve quota - but warn user
     limited_items = keyword_items[:max_keywords_per_run]
-    if len(keyword_items) > max_keywords_per_run:
-        st.warning(f"Limiting to first {max_keywords_per_run} {label} items to preserve quota.")
+    skipped_count = len(keyword_items) - len(limited_items)
+    
+    if skipped_count > 0:
+        st.error(f"⚠️ Skipping {skipped_count} {label} keywords due to quota limit. Increase 'Max keywords per run' to {len(keyword_items)} to process all.")
+        with st.expander(f"View skipped {label} keywords"):
+            skipped = keyword_items[max_keywords_per_run:]
+            for item in skipped[:20]:  # Show first 20 skipped
+                if item["developer"]:
+                    st.write(f"• {item['keyword']} + {item['developer']}")
+                else:
+                    st.write(f"• {item['keyword']}")
+            if len(skipped) > 20:
+                st.write(f"... and {len(skipped) - 20} more")
 
     all_results = []
     total_calls = 0
@@ -217,7 +226,7 @@ def fetch_articles_for_items(keyword_items, start_date, end_date, label):
     for idx, item in enumerate(limited_items):
         keyword, developer = item["keyword"], item["developer"]
         
-        status_text.text(f"Fetching {label}: {keyword}" + (f" + {developer}" if developer else ""))
+        status_text.text(f"Fetching {label}: {keyword}" + (f" + {developer}" if developer else "") + f" ({idx+1}/{len(limited_items)})")
         progress_bar.progress((idx + 1) / len(limited_items))
         
         base_payload = {
@@ -482,4 +491,4 @@ with tab1:
 with tab2:
     st.subheader("🏛 Registry & Methodology News")
     run_tab_logic("Registry News")
-    
+
